@@ -1,7 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
-    <content url="file://$MODULE_DIR$" />
+    <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/assets" />
+      <excludeFolder url="file://$MODULE_DIR$/assets/assets/object_models/004_sugar_box" />
+      <excludeFolder url="file://$MODULE_DIR$/assets/assets/object_models/011_banana" />
+      <excludeFolder url="file://$MODULE_DIR$/assets/assets/object_models/024_bowl" />
+      <excludeFolder url="file://$MODULE_DIR$/assets/assets/object_models/025_mug" />
+      <excludeFolder url="file://$MODULE_DIR$/assets/assets/object_models/036_wood_block" />
+      <excludeFolder url="file://$MODULE_DIR$/assets/assets/object_models/037_scissors" />
+      <excludeFolder url="file://$MODULE_DIR$/assets/assets/.ipynb_checkpoints" />
+      <excludeFolder url="file://$MODULE_DIR$/assets/object_models/052_extra_large_clamp" />
+      <excludeFolder url="file://$MODULE_DIR$/host_folder" />
+    </content>
     <orderEntry type="jdk" jdkName="Python 3.8" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>

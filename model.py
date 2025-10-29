@@ -7,6 +7,7 @@ from networks.object_head import obj_regHead, Pose2DLayer
 from networks.mano_head import mano_regHead
 from networks.CR import Transformer
 from networks.loss import Joint2DLoss, ManoLoss, ObjectLoss
+from networks.KGC import KnowledgeGuidedModule
 
 def init_weights(m):
     if type(m) == nn.ConvTranspose2d:
@@ -45,6 +46,8 @@ class HONet(nn.Module):
 
         self.out_res = roi_res
 
+        self.KGC = KnowledgeGuidedModule(2, 1024)
+
         # FPN-Res50 backbone
         self.base_net = FPN(pretrained=pretrained)
 
@@ -72,6 +75,7 @@ class HONet(nn.Module):
         self.transformer_obj.apply(init_weights)
         self.transformer_hand.apply(init_weights)
         self.obj_head.apply(init_weights)
+        self.KGC.apply(init_weights)
 
 
 
