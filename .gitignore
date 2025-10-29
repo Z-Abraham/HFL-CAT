@@ -1,0 +1,18 @@
+# 虚拟环境
+venv/
+env/
+
+# 编译文件
+__pycache__/
+*.py[cod]
+
+# 依赖清单
+requirements.txt  # 可选，若需跟踪则不忽略
+Pipfile.lock
+
+# 测试/日志
+tests/__pycache__/
+*.log
+
+assets/
+host_folder/
