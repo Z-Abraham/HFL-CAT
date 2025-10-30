@@ -4,7 +4,7 @@ import os.path as osp
 import json
 import sys
 sys.path.append('./main')
-from config import cfg
+from utils.config import cfg
 sys.path.insert(0, cfg.mano_path)
 import manopth
 from manopth.manolayer import ManoLayer

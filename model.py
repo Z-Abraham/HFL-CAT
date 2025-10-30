@@ -8,6 +8,7 @@ from networks.mano_head import mano_regHead
 from networks.CR import Transformer
 from networks.loss import Joint2DLoss, ManoLoss, ObjectLoss
 from networks.KGC import KnowledgeGuidedModule
+from networks.CAT import CrossAttention
 
 def init_weights(m):
     if type(m) == nn.ConvTranspose2d:
@@ -48,6 +49,8 @@ class HONet(nn.Module):
 
         self.KGC = KnowledgeGuidedModule(2, 1024)
 
+        self.CAT = CrossAttention(256, 21)
+
         # FPN-Res50 backbone
         self.base_net = FPN(pretrained=pretrained)
 
@@ -79,8 +82,10 @@ class HONet(nn.Module):
 
 
 
-    def net_forward(self, imgs, bbox_hand, bbox_obj,mano_params=None, roots3d=None):
+    def net_forward(self, imgs, joints_img, bbox_hand, bbox_obj,mano_params=None, roots3d=None):
         batch = self.new_method(imgs)
+        kypt_feats = joints_img
+
 
         inter_topLeft = torch.max(bbox_hand[:, :2], bbox_obj[:, :2])
         inter_bottomRight = torch.min(bbox_hand[:, 2:], bbox_obj[:, 2:])
@@ -93,10 +98,16 @@ class HONet(nn.Module):
         roi_boxes_hand = torch.cat((idx_tensor, bbox_hand), dim=1)
         # 4 here is the downscale size in FPN network(P2)
         x_hand = ops.roi_align(P2_h, roi_boxes_hand, output_size=(self.out_res, self.out_res), spatial_scale=1.0/4.0,
-                          sampling_ratio=-1)  # hand
+                          sampling_ratio=-1)  # hand  batch*256*32*32
+
+        # KGC module
+        kypt_feats = self.KGC(kypt_feats)  # batch_size*21*2
+        kypt_feats = kypt_feats.view(x_hand.shape[0],-1,x_hand.shape[2],x_hand.shape[3])
 
         x_obj = ops.roi_align(P2_o, roi_boxes_hand, output_size=(self.out_res, self.out_res), spatial_scale=1.0/4.0,
                           sampling_ratio=-1)  # hand
+
+        feats = self.CAT(x_hand, kypt_feats) # batch_size * 256*32*32
 
         # obj forward
         if self.reg_object:
@@ -116,8 +127,9 @@ class HONet(nn.Module):
 
             #print(3)
 
-            hand_obj = torch.cat([x_hand,x_obj.detach()],dim=1)
+            hand_obj = torch.cat([feats,x_obj.detach()],dim=1)
             hand_obj = self.transformer_hand(hand_obj,hand_obj)
+            # hand_obj
 
             y = self.transformer_obj(y, z_x.detach())
 
@@ -141,13 +153,13 @@ class HONet(nn.Module):
         batch = imgs.shape[0]
         return batch
 
-    def forward(self, imgs, bbox_hand, bbox_obj,mano_params=None, roots3d=None):
+    def forward(self, imgs, joints_img, bbox_hand, bbox_obj,mano_params=None, roots3d=None):
         if self.training:
-            preds_joints, pred_mano_results, gt_mano_results, preds_obj = self.net_forward(imgs, bbox_hand, bbox_obj,
+            preds_joints, pred_mano_results, gt_mano_results, preds_obj = self.net_forward(imgs, joints_img, bbox_hand, bbox_obj,
                                                                                            mano_params=mano_params)
             return preds_joints, pred_mano_results, gt_mano_results, preds_obj
         else:
-            preds_joints, pred_mano_results, _, preds_obj = self.net_forward(imgs, bbox_hand, bbox_obj,
+            preds_joints, pred_mano_results, _, preds_obj = self.net_forward(imgs, joints_img, bbox_hand, joints_img, bbox_obj,
                                                                              roots3d=roots3d)
             return preds_joints, pred_mano_results, preds_obj
 
@@ -178,13 +190,14 @@ class HOModel(nn.Module):
         # object loss
         self.object_loss = ObjectLoss(obj_reg_loss_weight=lambda_objects)
 
-    def forward(self, imgs, bbox_hand, bbox_obj,
+    def forward(self, imgs, joints_img, bbox_hand, bbox_obj,
                 joints_uv=None, joints_xyz=None, mano_params=None, roots3d=None,
                 obj_p2d_gt=None, obj_mask=None, obj_lossmask=None):
         if self.training:
             losses = {}
             total_loss = 0
-            preds_joints2d, pred_mano_results, gt_mano_results, preds_obj= self.honet(imgs, bbox_hand, bbox_obj,mano_params=mano_params)
+            preds_joints2d, pred_mano_results, gt_mano_results, preds_obj=  self.honet(
+                imgs, joints_img, bbox_hand, bbox_obj,mano_params=mano_params)
             if mano_params is not None:
                 mano_total_loss, mano_losses = self.mano_loss.compute_loss(pred_mano_results, gt_mano_results)
                 total_loss += mano_total_loss

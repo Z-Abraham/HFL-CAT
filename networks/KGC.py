@@ -1,8 +1,9 @@
 import os
 import sys
+from networks.graph_utils import *
 
 sys.path.append(os.path.abspath('./common/nets'))
-from graph_utils import *
+
 
 
 def get_graph_L():

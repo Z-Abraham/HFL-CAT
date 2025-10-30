@@ -45,6 +45,7 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
 #             print(torch.cuda.is_available())
             assert use_cuda and torch.cuda.is_available(), "requires cuda for training"
             imgs = sample["img"].float().cuda()
+            joints_img = sample["joints_img"].float().cuda()
             bbox_hand = sample["bbox_hand"].float().cuda()
             bbox_obj = sample["bbox_obj"].float().cuda()
 
@@ -58,7 +59,7 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
             # measure data loading time
             time_meters.add_loss_value("data_time", time.time() - end)
             # model forward
-            model_loss, model_losses = model(imgs, bbox_hand, bbox_obj, mano_params=mano_params,
+            model_loss, model_losses = model(imgs, joints_img, bbox_hand, bbox_obj, mano_params=mano_params,
                                              joints_uv=joints_uv, obj_p2d_gt=obj_p2d_gt, obj_mask=obj_mask)
             # compute gradient and do SGD step
             optimizer.zero_grad()
