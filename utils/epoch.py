@@ -99,6 +99,7 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
         else:
             if use_cuda and torch.cuda.is_available():
                 imgs = sample["img"].float().cuda()
+                joints_img = sample["joints_img"].float().cuda()
                 bbox_hand = sample["bbox_hand"].float().cuda()
                 bbox_obj = sample["bbox_obj"].float().cuda()
                 if "root_joint" in sample and save_results:
@@ -109,6 +110,7 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
             else:
                 imgs = sample["img"].float()
                 bbox_hand = sample["bbox_hand"].float()
+                joints_img = sample["joints_img"].float()
                 bbox_obj = sample["bbox_obj"].float()
                 if "root_joint" in sample and save_results:
                     root_joints = sample["root_joint"].float()
@@ -118,7 +120,7 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
             # measure data loading time
             time_meters.add_loss_value("data_time", time.time() - end)
 
-            preds_joints, results, preds_obj = model(imgs, bbox_hand, bbox_obj, roots3d=root_joints)
+            preds_joints, results, preds_obj = model(imgs, joints_img, bbox_hand, bbox_obj, roots3d=root_joints)
                         
             # from torchviz import make_dot
             # g = make_dot(preds_joints)

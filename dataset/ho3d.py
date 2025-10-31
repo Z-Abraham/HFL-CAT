@@ -39,6 +39,9 @@ class HO3D(data.Dataset):
         self.obj_bbox3d = dataset_util.get_bbox21_3d_from_dict(self.obj_mesh)
         self.obj_diameters = dataset_util.get_diameter(self.obj_mesh)
 
+        # 手部关节 用于测试
+        self.pred_joints_coord_img = json.load(open("/root/autodl-tmp/HFL-Net-main/dataset/kypt_eval.json", 'r', encoding='utf8'))
+
         if self.mode == "train":
             self.hue = hue
             self.contrast = contrast
@@ -197,7 +200,7 @@ class HO3D(data.Dataset):
         return img, mano_param, K, obj_mask, p2d, joints_uv, bbox_hand, bbox_obj
 
     # zzq新家s
-    def data_crop(self, img, K, bbox_hand, p2d):
+    def data_crop(self, img, K, bbox_hand, p2d, pred_joints_uv):
         # （你的原有代码：计算裁剪框、生成affinetrans）
         crop_hand = dataset_util.get_bbox_joints(bbox_hand.reshape(2, 2), bbox_factor=1.5)
         crop_obj = dataset_util.get_bbox_joints(p2d, bbox_factor=1.5)
@@ -212,11 +215,8 @@ class HO3D(data.Dataset):
         # -------------------- 新增：HandGCAT的joints_img处理逻辑（测试模式） --------------------
         # 1. 加载预预测的2D关节点（HandGCAT用pred_joints_coord_img，你需准备类似文件）
         # 假设你的预测文件是：./pred_joints_test.json（格式：list，每个元素是(21,2)的关节点）
-        pred_joints_path = "./pred_joints_test.json"
-        with open(pred_joints_path, "r", encoding="utf8") as f:
-            pred_joints_all = json.load(f)
         # 按索引取当前样本的预测关节点（注意：关节点顺序要和训练时一致，用你的jointsMapManoToSimple调整）
-        pred_joints_uv = np.array(pred_joints_all[idx], dtype=np.float32)  # idx是__getitem__的索引
+
         pred_joints_uv = pred_joints_uv[self.jointsMapSimpleToMano]  # 适配你的关节点顺序
 
         # 2. 仿射变换：映射到裁剪后的图像（和图像用同一个affinetrans）
@@ -303,8 +303,10 @@ class HO3D(data.Dataset):
             root_joint = root_joint.dot(self.coord_change_mat.T)
             sample["root_joint"] = root_joint
 
+            pred_joints_uv = np.array(self.pred_joints_coord_img[idx], dtype=np.float32)  # idx是__getitem__的索引
+
             # 调用修改后的data_crop，传入idx（用于取预测关节点），接收joints_img
-            img, K, bbox_hand, bbox_obj, joints_img = self.data_crop(img, K, bbox_hand, p2d)
+            img, K, bbox_hand, bbox_obj, joints_img = self.data_crop(img, K, bbox_hand, p2d, pred_joints_uv)
 
             # （你的原有sample内容）
             sample["img"] = functional.to_tensor(img)

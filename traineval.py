@@ -127,9 +127,11 @@ if __name__ == "__main__":
     args.manual_seed = 1
 
     if args.use_ho3d:
-        args.test_freq = 10
+        # args.test_freq = 10
+        args.test_freq = 1
         args.save_results = True
-        args.snapshot = 10
+        # args.snapshot = 10
+        args.snapshot = 1
     else:
         args.test_freq = 5
         args.save_results = False
