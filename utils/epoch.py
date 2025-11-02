@@ -41,8 +41,6 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
     end = time.time()
     for batch_idx, sample in enumerate(loader):
         if train:
-#             print("zzq")
-#             print(torch.cuda.is_available())
             assert use_cuda and torch.cuda.is_available(), "requires cuda for training"
             imgs = sample["img"].float().cuda()
             joints_img = sample["joints_img"].float().cuda()

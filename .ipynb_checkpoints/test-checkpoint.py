@@ -114,7 +114,7 @@ if __name__ == "__main__":
     args.HO3D_root = "/root/autodl-tmp/HFL-Net-main-cyt/data/HO3D/data"  # --HO3D_root
     args.host_folder = "host_folder/ho3d"  # --host_folder
     args.dex_ycb_root = "/data1/zhifeng/dex-ycb"  # --dex_ycb_root
-    args.epochs = 70  # --epochs
+    args.epochs = 40  # --epochs
     args.inp_res = 256  # --inp_res
     args.lr = 1e-4  # --lr
     args.train_batch = 64  # --train_batch
@@ -124,7 +124,8 @@ if __name__ == "__main__":
     args.lr_decay_step = 10  # --lr_decay_step
     args.test_batch = 64  # --test_batch
     args.use_ho3d = True  # --use_ho3d（布尔值参数，存在即为True）
-    args.manual_seed = 1
+    args.evaluate = True
+    args.resume = "/root/autodl-tmp/HFL-Net-main/host_folder/ho3d/checkpoint_50.pth.tar"
 
     if args.use_ho3d:
         args.test_freq = 10
