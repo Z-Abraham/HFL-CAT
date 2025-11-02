@@ -72,7 +72,7 @@ def process_bbox(bbox, img_width, img_height, expansion_factor=1.25):
 
 
 def get_aug_config():
-    scale_factor = 1
+    scale_factor = 0.25
     rot_factor = 30
     color_factor = 0.2
 

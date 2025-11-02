@@ -85,7 +85,7 @@ class HO3D(data.Dataset):
         else:
             self.set_list = ho3d_util.load_names(os.path.join(self.root, "evaluation.txt"))
 
-    def data_aug(self, img, mano_param, joints_uv, K, gray, p2d):
+    def data_aug(self, img, mano_param, joints_uv, K, gray, p2d, joints_img):
         crop_hand = dataset_util.get_bbox_joints(joints_uv, bbox_factor=1.5)
         crop_obj = dataset_util.get_bbox_joints(p2d, bbox_factor=1.5)
         center, scale = dataset_util.fuse_bbox(crop_hand, crop_obj, img.size)
@@ -108,6 +108,9 @@ class HO3D(data.Dataset):
 
         joints_uv = dataset_util.transform_coords(joints_uv, affinetrans)  # hand landmark trans
 
+        # zzq 处理关节信息的变换
+        joints_img_xy1 = np.concatenate((joints_img[:, :2], np.ones_like(joints_img[:, :1])), 1)
+        joints_img = np.dot(affinetrans, joints_img_xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
         # K0=K
 
         K = post_rot_trans.dot(K)
@@ -152,7 +155,7 @@ class HO3D(data.Dataset):
         obj_mask = np.ma.getmaskarray(np.ma.masked_not_equal(gray, 0)).astype(int)
         obj_mask = torch.from_numpy(obj_mask)
 
-        return img, mano_param, K, obj_mask, p2d, joints_uv, bbox_hand, bbox_obj
+        return img, mano_param, K, obj_mask, p2d, joints_uv, bbox_hand, bbox_obj, joints_img
 
     def load_handgcat_data(self):
         if self.mode == "train":
@@ -230,15 +233,6 @@ class HO3D(data.Dataset):
         if self.mode == 'train':
 
             joints_img = data['joints_coord_img']
-            # joints_img_xy1 = np.concatenate((joints_img[:,:2], np.ones_like(joints_img[:,:1])),1)
-            # joints_img = np.dot(img2bb_trans, joints_img_xy1.transpose(1,0)).transpose(1,0)[:,:2]
-            # # normalize to [0,1]
-            # joints_img[:,0] /= cfg.input_img_shape[1]
-            # joints_img[:,1] /= cfg.input_img_shape[0]
-            #
-            # if np.random.rand()<0.5:
-            #     noise=np.random.normal(0.,0.01,joints_img.shape)
-            #     joints_img += noise
 
             K = self.K[idx]
             # hand information
@@ -249,10 +243,14 @@ class HO3D(data.Dataset):
 
             p2d = self.obj_p2ds[idx]
             # data augmentation
-            img, mano_param, K, obj_mask, p2d, joints_uv, bbox_hand, bbox_obj = self.data_aug(img, mano_param,
-                                                                                              joints_uv, K, gray, p2d)
+            img, mano_param, K, obj_mask, p2d, joints_uv, bbox_hand, bbox_obj, joints_img_after = self.data_aug(img,
+                                                                                                                mano_param,
+                                                                                                                joints_uv,
+                                                                                                                K, gray,
+                                                                                                                p2d,
+                                                                                                                joints_img)
             sample["img"] = functional.to_tensor(img)
-            sample["joints_img"] = joints_img
+            sample["joints_img"] = joints_img_after
             sample["bbox_hand"] = bbox_hand
             sample["bbox_obj"] = bbox_obj
             sample["mano_param"] = mano_param
@@ -299,14 +297,16 @@ class HO3D(data.Dataset):
 
         return sample
 
+
 # 手部关节连接顺序（根据MANO模型的21个关节）
 HAND_CONNECTIONS = [
     [0, 1], [1, 2], [2, 3], [3, 4],  # 拇指
     [0, 5], [5, 6], [6, 7], [7, 8],  # 食指
     [0, 9], [9, 10], [10, 11], [11, 12],  # 中指
     [0, 13], [13, 14], [14, 15], [15, 16],  # 无名指
-    [0, 17], [17, 18], [18, 19], [19, 20]   # 小指
+    [0, 17], [17, 18], [18, 19], [19, 20]  # 小指
 ]
+
 
 def visualize_sample(sample):
     # 1. 处理图像张量 (3, H, W) -> (H, W, 3) 并转换为RGB
@@ -319,16 +319,16 @@ def visualize_sample(sample):
     # 2. 绘制手部边界框 (x1, y1, x2, y2)
     bbox_hand = sample['bbox_hand'].astype(int)
     cv2.rectangle(img, (bbox_hand[0], bbox_hand[1]),
-                 (bbox_hand[2], bbox_hand[3]), (0, 0, 255), 2, cv2.LINE_AA)
-    cv2.putText(img, 'Hand', (bbox_hand[0], bbox_hand[1]-10),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                  (bbox_hand[2], bbox_hand[3]), (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.putText(img, 'Hand', (bbox_hand[0], bbox_hand[1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
     # 3. 绘制物体边界框
     bbox_obj = sample['bbox_obj'].astype(int)
     cv2.rectangle(img, (bbox_obj[0], bbox_obj[1]),
-                 (bbox_obj[2], bbox_obj[3]), (0, 255, 0), 2, cv2.LINE_AA)
-    cv2.putText(img, 'Object', (bbox_obj[0], bbox_obj[1]-10),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                  (bbox_obj[2], bbox_obj[3]), (0, 255, 0), 2, cv2.LINE_AA)
+    cv2.putText(img, 'Object', (bbox_obj[0], bbox_obj[1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
     # 4. 绘制原始手部关节点（joints_img）
     joints_img = sample['joints_img'][:, :2].astype(int)  # 取x,y坐标
@@ -367,7 +367,6 @@ def visualize_sample(sample):
     plt.show()
 
 
-
 if __name__ == "__main__":
     import numpy as np
     import cv2
@@ -387,15 +386,14 @@ if __name__ == "__main__":
                    obj_model_root="/root/autodl-tmp/HFL-Net-main/assets/object_models",
                    train_label_root="/data1/zhifeng/ho3d-process", mode="train")
 
-    data = dataset.hand_gcat_datalist[00000]
-    # 1. 加载原始图像
-    img = cv2.imread(data['img_path'])
-    if img is None:
-        raise FileNotFoundError(f"图像路径不存在: {data['img_path']}")
+    sample = dataset.__getitem__(00000)
+    # 1. 处理图像张量 (3, H, W) -> (H, W, 3) 并转换为RGB
+    img_tensor = sample['img']  # 归一化的张量 (3, H, W)
+    img_np = img_tensor.permute(1, 2, 0).numpy()  # 转换为 (H, W, 3)
+    img_np = (img_np * 512).astype(np.uint8)  # 从[0,1]映射到[0,255]
+    img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)  # 转换为BGR用于OpenCV显示
 
-
-    joints_2d = data['joints_coord_img'][:, :2].astype(np.int32)
-
+    joints_2d = sample['joints_img'][:, :2].astype(np.int32)
     # 4. 绘制骨骼线（蓝色）
     line_color = (255, 0, 0)  # BGR格式，蓝色
     line_thickness = 2
@@ -424,5 +422,3 @@ if __name__ == "__main__":
     # sample = dataset.__getitem__(00000)
     # visualize_sample(sample)
     # print(sample)
-
-
