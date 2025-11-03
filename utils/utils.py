@@ -163,7 +163,7 @@ def get_network(args):
                 transformer_depth=args.transformer_depth,
                 transformer_head=args.transformer_head,
                 coord_change_mat=coord_change_mat,
-                reg_object=True, pretrained=pretrained)
+                reg_object=True, pretrained=pretrained, evaluate=args.evaluate)
 
     net = torch.nn.DataParallel(net)
 

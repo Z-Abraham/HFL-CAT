@@ -14,7 +14,7 @@ import random
 import numpy as np
 from PIL import Image, ImageFilter
 from PIL import ImageFile
-from ho3d_util import cam2pixel, process_bbox, get_bbox
+from dataset.ho3d_util import cam2pixel, process_bbox, get_bbox
 from utils.preprocessing import augmentation, load_img
 from utils.config import cfg
 
@@ -83,6 +83,7 @@ class HO3D(data.Dataset):
                 self.obj_p2ds.append(np.array(data['obj_p2ds'], dtype=np.float32))
 
         else:
+            self.hand_gcat_datalist = self.load_handgcat_data()
             self.set_list = ho3d_util.load_names(os.path.join(self.root, "evaluation.txt"))
 
     def data_aug(self, img, mano_param, joints_uv, K, gray, p2d, joints_img):
@@ -193,14 +194,56 @@ class HO3D(data.Dataset):
                 bbox = np.array(ann['bbox'], dtype=np.float32)
                 bbox = process_bbox(bbox, img['width'], img['height'], expansion_factor=1.5)
 
+                # 2. 3D→2D投影函数（实现核心公式）
+                def cam2pixel_eval(xyz, focal, princpt):
+                    """
+                    将3D相机坐标(xyz)转换为2D图像像素坐标(uv)
+                    xyz: (3,) 3D相机坐标 [X,Y,Z]
+                    focal: (2,) 焦距 [fx, fy]
+                    princpt: (2,) 主点 [cx, cy]
+                    return: (2,) 2D像素坐标 [u, v]
+                    """
+                    X, Y, Z = xyz
+                    fx, fy = focal
+                    cx, cy = princpt
+                    # 核心投影公式
+                    u = (X / Z) * fx + cx
+                    v = (Y / Z) * fy + cy
+                    return np.array([u, v], dtype=np.int32)  # 转为整数像素坐标
+
+                # 3. 计算root_joint的2D像素坐标
+                root_joint_2d = cam2pixel_eval(ann['root_joint_cam'],
+                                          ann['cam_param']['focal'],
+                                          ann['cam_param']['princpt'])
                 data = {"img_path": img_path, "img_shape": img_shape, "root_joint_cam": root_joint_cam,
-                        "bbox": bbox, "cam_param": cam_param}
+                        "bbox": bbox, "cam_param": cam_param, "root_joint_2d": root_joint_2d}
+
+                # 4. 可视化验证（在图片上画红色圆点标记）
+                # img = cv2.imread(data['img_path'])
+                # if img is not None:
+                #     # 画圆点（坐标u, v，半径5，红色，填充）
+                #     cv2.circle(img, (root_joint_2d[0], root_joint_2d[1]),
+                #                radius=5, color=(0, 0, 255), thickness=-1)
+                #     # 标注坐标文字
+                #     cv2.putText(img, f"Root: {root_joint_2d}",
+                #                 (root_joint_2d[0] + 10, root_joint_2d[1] - 10),
+                #                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                #     # 保存并显示
+                #     cv2.imwrite("root_joint_2d_marked.png", img)
+                #     print("已保存标记后的图片：root_joint_2d_marked.png")
+                #     # 可选：直接显示
+                #     # cv2.imshow("Root Joint 2D", img)
+                #     # cv2.waitKey(0)
+                #     # cv2.destroyAllWindows()
+                #     return data
+                # else:
+                #     print("图像路径错误，无法加载图片")
 
             datalist.append(data)
 
         return datalist
 
-    def data_crop(self, img, K, bbox_hand, p2d):
+    def data_crop(self, img, K, bbox_hand, p2d, joints_img, test_kypt):
         crop_hand = dataset_util.get_bbox_joints(bbox_hand.reshape(2, 2), bbox_factor=1.5)
         crop_obj = dataset_util.get_bbox_joints(p2d, bbox_factor=1.5)
         bbox_hand = dataset_util.get_bbox_joints(bbox_hand.reshape(2, 2), bbox_factor=1.1)
@@ -211,9 +254,24 @@ class HO3D(data.Dataset):
         bbox_obj = dataset_util.transform_coords(bbox_obj.reshape(2, 2), affinetrans).flatten()
         # Transform and crop
         img = dataset_util.transform_img(img, affinetrans, [self.inp_res, self.inp_res])
+        # zzq 处理关节信息的变换
+        # 步骤1：将一维数组转为二维数组（shape=(1, 2)，适配拼接维度）
+        joints_img_2d = joints_img.reshape(1, 2)  # 结果：[[343., 297.]]
+        # 步骤2：创建与点数量匹配的全1数组（shape=(1, 1)）
+        ones = np.ones((joints_img_2d.shape[0], 1), dtype=np.float32)  # 结果：[[1.]]
+        # 步骤3：用np.concatenate拼接，形成齐次坐标（shape=(1, 3)）
+        joints_hom = np.concatenate([joints_img_2d, ones], axis=1)
+        joints_img = np.dot(affinetrans, joints_hom.transpose(1, 0)).transpose(1, 0)[:, :2]
+
+        # 处理kypt
+        test_kypt = np.array(test_kypt, dtype=np.float32)
+        test_kypt_ones = np.ones((test_kypt.shape[0], 1), dtype=np.float32)
+        test_kypt_hom = np.concatenate([test_kypt, test_kypt_ones], axis=1)
+        test_kypt_img = np.dot(affinetrans, test_kypt_hom.transpose(1, 0)).transpose(1, 0)[:, :2]
+
         img = img.crop((0, 0, self.inp_res, self.inp_res))
         K = affinetrans.dot(K)
-        return img, K, bbox_hand, bbox_obj
+        return img, K, bbox_hand, bbox_obj, joints_img, test_kypt_img
 
     def __len__(self):
         return len(self.set_list)
@@ -264,8 +322,7 @@ class HO3D(data.Dataset):
                                   allow_pickle=True)
             K = np.array(annotations['camMat'], dtype=np.float32)
             # object
-            sample["obj_cls"] = np.array(self.pred_joints_coord_img[idx], dtype=np.float32)
-            sample["joints_img"] = data['joints_coord_img']
+            sample["obj_cls"] = annotations['objName']
             sample["obj_bbox3d"] = self.obj_bbox3d[sample["obj_cls"]]
             sample["obj_diameter"] = self.obj_diameters[sample["obj_cls"]]
             obj_pose = ho3d_util.pose_from_RT(annotations['objRot'].reshape((3,)), annotations['objTrans'])
@@ -278,18 +335,23 @@ class HO3D(data.Dataset):
             root_joint = root_joint.dot(self.coord_change_mat.T)
             sample["root_joint"] = root_joint
 
+            test_kypt = self.pred_joints_coord_img[idx]
+
             # drawer = ImageDraw.Draw(img)
             # for point in bbox_hand.reshape(2,2):
             #     drawer.point(point, fill='black')
             # img.save("1.jpg")
 
-            img, K, bbox_hand, bbox_obj = self.data_crop(img, K, bbox_hand, p2d)
+            # root align
+            joints_img = data['root_joint_2d']
+
+            img, K, bbox_hand, bbox_obj, joints_img_after, test_kypt_img = \
+                self.data_crop(img, K, bbox_hand, p2d, joints_img, test_kypt)
             sample["img"] = functional.to_tensor(img)
 
-            # for point in bbox_hand.reshape(2,2):
-            #         drawer.point(point, fill='black')
-            # img.save("2.jpg")
 
+            sample["joints_img"] = joints_img_after
+            sample["test_kypt"] = test_kypt_img
             sample["bbox_hand"] = bbox_hand
             sample["bbox_obj"] = bbox_obj
             sample["cam_intr"] = K
@@ -381,10 +443,10 @@ if __name__ == "__main__":
         [0, 13], [13, 14], [14, 15], [15, 16],  # 无名指
         [0, 17], [17, 18], [18, 19], [19, 20]  # 小指
     ]
-
+    # evaluation
     dataset = HO3D(dataset_root="/root/autodl-tmp/HFL-Net-main-cyt/data/HO3D/data",
                    obj_model_root="/root/autodl-tmp/HFL-Net-main/assets/object_models",
-                   train_label_root="/data1/zhifeng/ho3d-process", mode="train")
+                   train_label_root="/data1/zhifeng/ho3d-process", mode="evaluation")
 
     sample = dataset.__getitem__(00000)
     # 1. 处理图像张量 (3, H, W) -> (H, W, 3) 并转换为RGB
@@ -393,7 +455,8 @@ if __name__ == "__main__":
     img_np = (img_np * 512).astype(np.uint8)  # 从[0,1]映射到[0,255]
     img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)  # 转换为BGR用于OpenCV显示
 
-    joints_2d = sample['joints_img'][:, :2].astype(np.int32)
+    # joints_2d = sample['joints_img'][:, :2].astype(np.int32)
+    joints_2d = sample['test_kypt'][:, :2].astype(np.int32)
     # 4. 绘制骨骼线（蓝色）
     line_color = (255, 0, 0)  # BGR格式，蓝色
     line_thickness = 2
@@ -410,7 +473,7 @@ if __name__ == "__main__":
         cv2.circle(img, (x, y), point_radius, point_color, point_thickness)
 
     # 6. 保存或显示结果
-    save_path = 'hand_skeleton_visualization.png'
+    save_path = 'hand_skeleton_visualization_kypt.png'
     cv2.imwrite(save_path, img)
     print(f"带骨骼的可视化结果已保存至: {save_path}")
 

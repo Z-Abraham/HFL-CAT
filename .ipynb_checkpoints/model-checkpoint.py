@@ -44,7 +44,7 @@ class HONet(nn.Module):
     def __init__(self, roi_res=32, joint_nb=21, stacks=1, channels=256, blocks=1,
                  transformer_depth=1, transformer_head=8,
                  mano_layer=None, mano_neurons=[1024, 512], coord_change_mat=None,
-                 reg_object=True, pretrained=True, evaluate=False):
+                 reg_object=True, pretrained=True):
 
         super(HONet, self).__init__()
 
@@ -82,11 +82,9 @@ class HONet(nn.Module):
         self.mano_branch.apply(init_weights)
         self.transformer_obj.apply(init_weights)
         self.transformer_hand.apply(init_weights)
-        self.obj_head.apply(init_weights)
 
-        if not evaluate:
-            self.KGC.apply(init_weights)
-            self.CAT.apply(init_weights)
+        self.obj_head.apply(init_weights)
+        self.KGC.apply(init_weights)
 
     def net_forward(self, imgs, joints_img, bbox_hand, bbox_obj, mano_params=None, roots3d=None):
         batch = self.new_method(imgs)
