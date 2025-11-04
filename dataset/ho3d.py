@@ -350,7 +350,7 @@ class HO3D(data.Dataset):
             sample["img"] = functional.to_tensor(img)
 
 
-            sample["joints_img"] = joints_img_after
+            sample["joints_img"] = test_kypt_img
             sample["test_kypt"] = test_kypt_img
             sample["bbox_hand"] = bbox_hand
             sample["bbox_obj"] = bbox_obj

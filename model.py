@@ -98,21 +98,24 @@ class HONet(nn.Module):
         msk_inter = ((inter_bottomRight - inter_topLeft > 0).sum(dim=1)) == 2
         # P2 from FPN Network
         P2_h, P2_o = self.base_net(imgs)
+
         idx_tensor = torch.arange(batch, device=imgs.device).float().view(-1, 1)
         # get roi boxes
         roi_boxes_hand = torch.cat((idx_tensor, bbox_hand), dim=1)
         # 4 here is the downscale size in FPN network(P2)
-        x_hand = ops.roi_align(P2_h, roi_boxes_hand, output_size=(self.out_res, self.out_res), spatial_scale=1.0 / 4.0,
-                               sampling_ratio=-1)  # hand  batch*256*32*32
+        # x_hand = ops.roi_align(P2_h, roi_boxes_hand, output_size=(self.out_res, self.out_res), spatial_scale=1.0 / 4.0,
+        #                        sampling_ratio=-1)  # hand  batch*256*32*32
+
 
         # KGC module
         kypt_feats = self.KGC(kypt_feats)  # batch_size*21*2
-        kypt_feats = kypt_feats.view(x_hand.shape[0], -1, x_hand.shape[2], x_hand.shape[3])
+        kypt_feats = kypt_feats.view(P2_h.shape[0], -1, P2_h.shape[2], P2_h.shape[3])
 
         x_obj = ops.roi_align(P2_o, roi_boxes_hand, output_size=(self.out_res, self.out_res), spatial_scale=1.0 / 4.0,
                               sampling_ratio=-1)  # hand
 
-        feats = self.CAT(x_hand, kypt_feats)  # batch_size * 256*32*32
+        # 这里手和2d关节进行CAT
+        feats = self.CAT(P2_h, kypt_feats)  # batch_size * 256*32*32
 
         # obj forward
         if self.reg_object:
@@ -130,8 +133,8 @@ class HONet(nn.Module):
 
             # print(3)
 
-            hand_obj = torch.cat([feats, x_obj.detach()], dim=1)
-            hand_obj = self.transformer_hand(hand_obj, hand_obj)
+            # hand_obj = torch.cat([feats, x_obj.detach()], dim=1)
+            # hand_obj = self.transformer_hand(hand_obj, hand_obj)
             # hand_obj
 
             y = self.transformer_obj(y, z_x.detach())
@@ -141,7 +144,7 @@ class HONet(nn.Module):
         else:
             preds_obj = None
 
-        hand = hand_obj[:, 0:256, :, :]
+        hand = feats[:, 0:256, :, :]
         # hand forward
 
         out_hm, encoding, preds_joints = self.hand_head(hand)

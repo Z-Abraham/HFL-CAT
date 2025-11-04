@@ -78,13 +78,13 @@ def main(args):
             monitor.log_train(epoch + 1, train_dict)
 
         # Evaluate on validation set
-        # if args.evaluate or (epoch + 1) % args.test_freq == 0:
-        #     with torch.no_grad():
-        #         single_epoch(loader=val_loader, model=model, epoch=epoch if not args.evaluate else None,
-        #                      optimizer=None, save_path=args.host_folder,
-        #                      train=False, save_results=args.save_results, use_cuda=args.use_cuda,
-        #                      indices_order=val_dat.jointsMapSimpleToMano if hasattr(val_dat,
-        #                                                                             "jointsMapSimpleToMano") else None)
+        if args.evaluate or (epoch + 1) % args.test_freq == 0:
+            with torch.no_grad():
+                single_epoch(loader=val_loader, model=model, epoch=epoch if not args.evaluate else None,
+                             optimizer=None, save_path=args.host_folder,
+                             train=False, save_results=args.save_results, use_cuda=args.use_cuda,
+                             indices_order=val_dat.jointsMapSimpleToMano if hasattr(val_dat,
+                                                                                    "jointsMapSimpleToMano") else None)
 
         if not args.evaluate:
             if (epoch + 1) % args.snapshot == 0 or (epoch + 1) % 5 == 0:
@@ -127,11 +127,11 @@ if __name__ == "__main__":
     args.manual_seed = 1
 
     if args.use_ho3d:
-        args.test_freq = 10
-        # args.test_freq = 1
+        # args.test_freq = 10
+        args.test_freq = 1
         args.save_results = True
-        args.snapshot = 10
-        # args.snapshot = 1
+        # args.snapshot = 10
+        args.snapshot = 1
     else:
         args.test_freq = 5
         args.save_results = False

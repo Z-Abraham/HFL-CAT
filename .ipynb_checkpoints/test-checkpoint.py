@@ -125,7 +125,7 @@ if __name__ == "__main__":
     args.test_batch = 64  # --test_batch
     args.use_ho3d = True  # --use_ho3d（布尔值参数，存在即为True）
     args.evaluate = True
-    args.resume = "/root/autodl-tmp/HFL-Net-main/host_folder/ho3d/checkpoint_50.pth.tar"
+    args.resume = "/root/autodl-tmp/HFL-Net-main/host_folder/ho3d/checkpoint_40.pth.tar"
 
     if args.use_ho3d:
         args.test_freq = 10

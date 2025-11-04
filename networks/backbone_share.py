@@ -64,6 +64,8 @@ class FPN(nn.Module):
         self.latlayer2_o = nn.Conv2d( 512, 256, kernel_size=1, stride=1, padding=0)
         self.latlayer3_o = nn.Conv2d( 256, 256, kernel_size=1, stride=1, padding=0)
 
+        self.pool = nn.AvgPool2d(2, stride=2)
+
 
     def _upsample_add(self, x, y):
         _, _, H, W = y.size()
@@ -79,12 +81,11 @@ class FPN(nn.Module):
         #c2_o = self.layer1_h(c1_o)
     
         c3_h = self.layer2_h(c2_h)
-        c3_o = self.layer2_o(c2_h)
-  
         c4_h = self.layer3_h(c3_h)
-        c4_o = self.layer3_o(c3_o)
- 
         c5_h = self.layer4_h(c4_h)
+
+        c3_o = self.layer2_o(c2_h)
+        c4_o = self.layer3_o(c3_o)
         c5_o = self.layer4_h(c4_o)
     
         # Top-down
@@ -101,14 +102,15 @@ class FPN(nn.Module):
         # Smooth
         #p4 = self.smooth1(p4)
         #p3_h = self.smooth2(p3_h)
-
         p2_h = self.smooth3_h(p2_h)
+
         p2_o = self.smooth3_o(p2_o)
         #print(p2.shape)
-        
 
+        # zzq 考虑和HANDGCAT一样池化
+        p2_h_pool = self.pool(p2_h)
         
-        return p2_h , p2_o
+        return p2_h_pool , p2_o
 
 class FPN_18(nn.Module):
     def __init__(self, pretrained=True):
