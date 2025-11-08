@@ -188,7 +188,7 @@ def visualize_results(pred_path, img_dir, mano_model_path, save_vis_dir, num_sam
 # ------------------------------
 if __name__ == "__main__":
     # 配置路径（请根据实际情况修改）
-    PRED_PATH = "/root/autodl-tmp/HFL-Net-main/host_folder/ho3d/pred_epoch_1.json"    # 预测结果JSON路径
+    PRED_PATH = "/root/autodl-tmp/HFL-Net-main/host_folder/ho3d/pred_40.json"    # 预测结果JSON路径
     IMG_DIR = "/root/autodl-tmp/HFL-Net-main-cyt/data/HO3D/data/evaluation/AP10/rgb"         # 原始图像目录
     MANO_MODEL_PATH = "/root/autodl-tmp/HFL-Net-main/manopth/mano/models"                      # MANO模型目录
     SAVE_VIS_DIR = "/root/autodl-tmp/HFL-Net-main"               # 可视化结果保存目录
