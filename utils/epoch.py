@@ -4,12 +4,11 @@ import torch
 
 from utils.utils import progress_bar as bar, AverageMeters, dump
 from dataset.ho3d_util import filter_test_object_ho3d, get_unseen_test_object, filter_test_object_dexycb
-from utils.metric import eval_object_pose, eval_batch_obj,eval_hand,eval_hand_pose_result
+from utils.metric import eval_object_pose, eval_batch_obj, eval_hand, eval_hand_pose_result
 
 
 def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoints",
                  train=True, save_results=False, indices_order=None, use_cuda=True):
-
     time_meters = AverageMeters()
 
     if train:
@@ -20,7 +19,7 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
     else:
         model.eval()
         # object evaluation
-        REP_res_dict, ADD_res_dict= {}, {}
+        REP_res_dict, ADD_res_dict = {}, {}
         diameter_dict = loader.dataset.obj_diameters
         mesh_dict = loader.dataset.obj_mesh
         if save_results:
@@ -32,17 +31,17 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
             REP_res_dict[k] = []
             ADD_res_dict[k] = []
         if save_results:
-             # save hand results for online evaluation
-             xyz_pred_list, verts_pred_list = list(), list()
+            # save hand results for online evaluation
+            xyz_pred_list, verts_pred_list = list(), list()
         else:
-            #hand evaluation
-            hand_eval_result = [[],[]]
+            # hand evaluation
+            hand_eval_result = [[], []]
 
     end = time.time()
     for batch_idx, sample in enumerate(loader):
         if train:
-#             print("zzq")
-#             print(torch.cuda.is_available())
+            #             print("zzq")
+            #             print(torch.cuda.is_available())
             assert use_cuda and torch.cuda.is_available(), "requires cuda for training"
             imgs = sample["img"].float().cuda()
             joints_img = sample["joints_img"].float().cuda()
@@ -53,18 +52,21 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
             joints_uv = sample["joints2d"].float().cuda()
             obj_p2d_gt = sample["obj_p2d"].float().cuda()
             obj_mask = sample["obj_mask"].float().cuda()
-            #print(sample["mano_param"])
-          
+            # print(sample["mano_param"])
+            pose2d_heatmap_gt = sample["pose2d_heatmap_gt"].float().cuda()  # 新增
 
             # measure data loading time
             time_meters.add_loss_value("data_time", time.time() - end)
             # model forward
             model_loss, model_losses = model(imgs, joints_img, bbox_hand, bbox_obj, mano_params=mano_params,
-                                             joints_uv=joints_uv, obj_p2d_gt=obj_p2d_gt, obj_mask=obj_mask)
+                                             joints_uv=joints_uv, obj_p2d_gt=obj_p2d_gt, obj_mask=obj_mask,
+                                             pose2d_heatmap_gt=pose2d_heatmap_gt)
             # compute gradient and do SGD step
             optimizer.zero_grad()
             model_loss.backward()
             optimizer.step()
+
+            print(f"NEW ADD Total Loss: {losses['total_loss']:.4f}, Pose2D Loss: {losses['pose2d_heatmap_loss']:.4f}")
 
             for key, val in model_losses.items():
                 if val is not None:
@@ -121,7 +123,7 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
             time_meters.add_loss_value("data_time", time.time() - end)
 
             preds_joints, results, preds_obj = model(imgs, joints_img, bbox_hand, bbox_obj, roots3d=root_joints)
-                        
+
             # from torchviz import make_dot
             # g = make_dot(preds_joints)
             # g.render('espnet_model', view=False) 
@@ -148,9 +150,11 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
             batch_hand_type = sample["hand_type"]
             REP_res_dict, ADD_res_dict = eval_batch_obj(preds_obj, bbox_obj,
                                                         obj_pose, mesh_dict, obj_bbox3d, obj_cls,
-                                                        cam_intr, REP_res_dict, ADD_res_dict,batch_affinetrans=batch_affinetrans,batch_hand_type=batch_hand_type)
+                                                        cam_intr, REP_res_dict, ADD_res_dict,
+                                                        batch_affinetrans=batch_affinetrans,
+                                                        batch_hand_type=batch_hand_type)
             # hand predictions and evaluation
-                        #modified \u65e0\u9700\u4fdd\u5b58\u7ed3\u679c
+            # modified \u65e0\u9700\u4fdd\u5b58\u7ed3\u679c
             if save_results:
                 for xyz, verts in zip(pred_xyz, pred_verts):
                     if indices_order is not None:
@@ -158,11 +162,12 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
                     xyz_pred_list.append(xyz)
                     verts_pred_list.append(verts)
             else:
-                hand_eval_result = eval_hand(pred_xyz,sample["root_joint"],sample["hand_type"],sample["joints_coord_cam"],hand_eval_result)
+                hand_eval_result = eval_hand(pred_xyz, sample["root_joint"], sample["hand_type"],
+                                             sample["joints_coord_cam"], hand_eval_result)
             # measure elapsed time
             time_meters.add_loss_value("batch_time", time.time() - end)
 
-            suffix = "({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s"\
+            suffix = "({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s" \
                 .format(batch=batch_idx + 1, size=len(loader),
                         data=time_meters.average_meters["data_time"].val,
                         bt=time_meters.average_meters["batch_time"].avg)
@@ -177,17 +182,19 @@ def single_epoch(loader, model, epoch=None, optimizer=None, save_path="checkpoin
         # if REP_res_dict is not None and ADD_res_dict is not None \
         #         and diameter_dict is not None and unseen_objects is not None:
         if REP_res_dict is not None and ADD_res_dict is not None \
-                      and diameter_dict is not None:
-           eval_object_pose(REP_res_dict, ADD_res_dict, diameter_dict, outpath=save_path, unseen_objects=unseen_objects,
-                            epoch=epoch+1 if epoch is not None else None)
-        #hand evalution
+                and diameter_dict is not None:
+            eval_object_pose(REP_res_dict, ADD_res_dict, diameter_dict, outpath=save_path,
+                             unseen_objects=unseen_objects,
+                             epoch=epoch + 1 if epoch is not None else None)
+        # hand evalution
         # if hand_eval_result is not None:
         #     eval_hand_pose_result(hand_eval_result,outpath=save_path, 
         #                     epoch=epoch+1 if epoch is not None else None)
         if save_results:
-            pred_out_path = os.path.join(save_path, "pred_epoch_{}.json".format(epoch+1) if epoch is not None else "pred_{}.json")
+            pred_out_path = os.path.join(save_path, "pred_epoch_{}.json".format(
+                epoch + 1) if epoch is not None else "pred_{}.json")
             dump(pred_out_path, xyz_pred_list, verts_pred_list)
         elif hand_eval_result is not None:
-            eval_hand_pose_result(hand_eval_result,outpath=save_path, 
-                            epoch=epoch+1 if epoch is not None else None)
+            eval_hand_pose_result(hand_eval_result, outpath=save_path,
+                                  epoch=epoch + 1 if epoch is not None else None)
         return None

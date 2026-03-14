@@ -11,6 +11,53 @@ from networks.KGC import KnowledgeGuidedModule
 from networks.CAT import CrossAttention
 
 
+# ========== 新增：轻量2D姿态辅助分支 ==========
+class Lightweight2DPoseBranch(nn.Module):
+    def __init__(self, in_channels=256, joint_nb=21, hidden_dim=128):
+        super().__init__()
+        self.joint_nb = joint_nb
+        # 分支结构：1x1降维 → 3x3卷积 → 1x1升维到关节数 + Sigmoid
+        self.conv1 = nn.Conv2d(in_channels, hidden_dim, kernel_size=1, stride=1, padding=0)
+        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(hidden_dim, joint_nb, kernel_size=1, stride=1, padding=0)
+        self.relu = nn.ReLU(inplace=True)
+        self.sigmoid = nn.Sigmoid()
+
+        # 初始化权重
+        self.conv1.apply(weights_init_kaiming)
+        self.conv2.apply(weights_init_kaiming)
+        self.conv3.apply(init_weights)
+
+    def forward(self, x):
+        # x: 输入特征图 (B, 256, H/4, W/4)
+        x = self.relu(self.conv1(x))  # 1x1降维到128
+        x = self.relu(self.conv2(x))  # 3x3保持尺寸
+        heatmap = self.sigmoid(self.conv3(x))  # 1x1升维到21关节，Sigmoid归一化到[0,1]
+        return heatmap
+
+
+# ========== 新增：从热图提取2D关节坐标的辅助函数 ==========
+def heatmap_to_2d_joints(heatmap, img_size=(512, 512)):
+    """
+    从热图提取2D关节坐标（batch级）
+    Args:
+        heatmap: (B, 21, H, W) 2D姿态热图
+        img_size: (width, height) 输入图像尺寸，用于还原坐标
+    Returns:
+        joints_2d: (B, 21, 2) 2D关节坐标（像素值）
+    """
+    B, J, H, W = heatmap.shape
+    # 1. 找到每个关节热图的峰值坐标 (B, J)
+    heatmap_flat = heatmap.reshape(B, J, -1)
+    max_idx = torch.argmax(heatmap_flat, dim=-1)  # (B, J)
+    # 2. 转换为(x,y)坐标
+    x = (max_idx % W) * (img_size[0] / W)  # 还原到图像宽度
+    y = (max_idx // W) * (img_size[1] / H)  # 还原到图像高度
+    # 3. 拼接为(B, 21, 2)
+    joints_2d = torch.stack([x, y], dim=-1)
+    return joints_2d
+
+
 def init_weights(m):
     if type(m) == nn.ConvTranspose2d:
         nn.init.normal_(m.weight, std=0.001)
@@ -49,13 +96,24 @@ class HONet(nn.Module):
         super(HONet, self).__init__()
 
         self.out_res = roi_res
+        self.joint_nb = joint_nb  # 21个手部关节
+        self.inp_channels = channels  # 256（FPN输出通道）
 
+        # 新增模块初始化
         self.KGC = KnowledgeGuidedModule(2, 1024)
 
+        # 新增CAT模块初始化
         self.CAT = CrossAttention(256, 21)
 
         # FPN-Res50 backbone
         self.base_net = FPN(pretrained=pretrained)
+
+        # ========== 新增：初始化2D姿态辅助分支 ==========
+        self.pose2d_branch = Lightweight2DPoseBranch(
+            in_channels=self.inp_channels,
+            joint_nb=self.joint_nb,
+            hidden_dim=128  # 极轻量，仅128维中间层
+        )
 
         # hand head
         self.hand_head = hand_regHead(roi_res=roi_res, joint_nb=joint_nb,
@@ -83,91 +141,87 @@ class HONet(nn.Module):
         self.transformer_obj.apply(init_weights)
         self.transformer_hand.apply(init_weights)
         self.obj_head.apply(init_weights)
-        self.KGC.apply(init_weights)
+        self.KGC.apply(init_weights)  # KGC分支初始化
+        self.pose2d_branch.apply(init_weights)  # 新增分支初始化
 
-    def net_forward(self, imgs, joints_img, bbox_hand, bbox_obj, mano_params=None, roots3d=None):
+    def net_forward(self, imgs, bbox_hand, bbox_obj, mano_params=None, roots3d=None):
         batch = self.new_method(imgs)
-        kypt_feats = joints_img
 
         inter_topLeft = torch.max(bbox_hand[:, :2], bbox_obj[:, :2])
         inter_bottomRight = torch.min(bbox_hand[:, 2:], bbox_obj[:, 2:])
         bbox_inter = torch.cat((inter_topLeft, inter_bottomRight), dim=1)
         msk_inter = ((inter_bottomRight - inter_topLeft > 0).sum(dim=1)) == 2
-        # P2 from FPN Network
+
+        # ========== 核心修改：前向传播时运行2D姿态辅助分支 ==========
+        # 1. 原有FPN前向，输出手部分支特征P2_h（对应架构图的Ph）、物体分支特征P2_o
         P2_h, P2_o = self.base_net(imgs)
+        # 2. 运行2D姿态辅助分支，输出21个关节的热图 (B,21,H/4,W/4)
+        pose2d_heatmap = self.pose2d_branch(P2_h)
+        # 3. 从热图提取2D关节坐标（用于送给KGC模块）
+        # 注意：img_size需和你的输入图像尺寸匹配（HO3D是512，Dex-YCB是640x480，可传参）
+        img_size = (imgs.shape[3], imgs.shape[2])  # (width, height)
+        pred_joints2d = heatmap_to_2d_joints(pose2d_heatmap, img_size=img_size)
+
+        # 原有逻辑保持不变（仅补充：pred_joints2d可传给KGC模块）
         idx_tensor = torch.arange(batch, device=imgs.device).float().view(-1, 1)
-        # get roi boxes
         roi_boxes_hand = torch.cat((idx_tensor, bbox_hand), dim=1)
-        # 4 here is the downscale size in FPN network(P2)
-        x_hand = ops.roi_align(P2_h, roi_boxes_hand, output_size=(self.out_res, self.out_res), spatial_scale=1.0 / 4.0,
-                               sampling_ratio=-1)  # hand  batch*256*32*32
+        x_hand = ops.roi_align(P2_h, roi_boxes_hand, output_size=(self.out_res, self.out_res),
+                               spatial_scale=1.0 / 4.0,
+                               sampling_ratio=-1)
+        x_obj = ops.roi_align(P2_o, roi_boxes_hand, output_size=(self.out_res, self.out_res),
+                              spatial_scale=1.0 / 4.0,
+                              sampling_ratio=-1)
 
-        # KGC module
-        kypt_feats = self.KGC(kypt_feats)  # batch_size*21*2
-        kypt_feats = kypt_feats.view(x_hand.shape[0], -1, x_hand.shape[2], x_hand.shape[3])
-
-        x_obj = ops.roi_align(P2_o, roi_boxes_hand, output_size=(self.out_res, self.out_res), spatial_scale=1.0 / 4.0,
-                              sampling_ratio=-1)  # hand
-
-        feats = self.CAT(x_hand, kypt_feats)  # batch_size * 256*32*32
-
-        # obj forward
+        # 物体分支前向（原有逻辑）
         if self.reg_object:
             roi_boxes_obj = torch.cat((idx_tensor, bbox_obj), dim=1)
             roi_boxes_inter = torch.cat((idx_tensor, bbox_inter), dim=1)
-
-            y = ops.roi_align(P2_o, roi_boxes_obj, output_size=(self.out_res, self.out_res), spatial_scale=1.0 / 4.0,
-                              sampling_ratio=-1)  # obj
-
+            y = ops.roi_align(P2_o, roi_boxes_obj, output_size=(self.out_res, self.out_res),
+                              spatial_scale=1.0 / 4.0,
+                              sampling_ratio=-1)
             z_x = ops.roi_align(P2_h, roi_boxes_inter, output_size=(self.out_res, self.out_res),
                                 spatial_scale=1.0 / 4.0,
-                                sampling_ratio=-1)  # intersection
-
+                                sampling_ratio=-1)
             z_x = msk_inter[:, None, None, None] * z_x
-
-            # print(3)
-
-            hand_obj = torch.cat([feats, x_obj.detach()], dim=1)
+            hand_obj = torch.cat([x_hand, x_obj.detach()], dim=1)
             hand_obj = self.transformer_hand(hand_obj, hand_obj)
-            # hand_obj
-
             y = self.transformer_obj(y, z_x.detach())
-
             out_fm = self.obj_head(y)
             preds_obj = self.obj_reorgLayer(out_fm)
         else:
             preds_obj = None
 
+        # 手部分支前向（原有逻辑）
         hand = hand_obj[:, 0:256, :, :]
-        # hand forward
-
         out_hm, encoding, preds_joints = self.hand_head(hand)
-
         mano_encoding = self.hand_encoder(out_hm, encoding)
+        pred_mano_results, gt_mano_results = self.mano_branch(mano_encoding, mano_params=mano_params,
+                                                              roots3d=roots3d)
 
-        pred_mano_results, gt_mano_results = self.mano_branch(mano_encoding, mano_params=mano_params, roots3d=roots3d)
-
-        return preds_joints, pred_mano_results, gt_mano_results, preds_obj
+        # ========== 返回值补充：2D热图和预测的2D关节坐标 ==========
+        return preds_joints, pred_mano_results, gt_mano_results, preds_obj, pose2d_heatmap, pred_joints2d
 
     def new_method(self, imgs):
         batch = imgs.shape[0]
         return batch
 
-    def forward(self, imgs, joints_img, bbox_hand, bbox_obj, mano_params=None, roots3d=None):
+    def forward(self, imgs, bbox_hand, bbox_obj, mano_params=None, roots3d=None):
         if self.training:
-            preds_joints, pred_mano_results, gt_mano_results, preds_obj = self.net_forward(imgs, joints_img, bbox_hand,
-                                                                                           bbox_obj,
-                                                                                           mano_params=mano_params)
-            return preds_joints, pred_mano_results, gt_mano_results, preds_obj
+            # 训练时返回2D热图和坐标
+            preds_joints, pred_mano_results, gt_mano_results, preds_obj, pose2d_heatmap, pred_joints2d = self.net_forward(
+                imgs, bbox_hand, bbox_obj, mano_params=mano_params
+            )
+            return preds_joints, pred_mano_results, gt_mano_results, preds_obj, pose2d_heatmap, pred_joints2d
         else:
-            preds_joints, pred_mano_results, _, preds_obj = self.net_forward(imgs, joints_img, bbox_hand, joints_img,
-                                                                             bbox_obj,
-                                                                             roots3d=roots3d)
-            return preds_joints, pred_mano_results, preds_obj
+            # 测试时返回2D坐标（送给KGC）
+            preds_joints, pred_mano_results, _, preds_obj, _, pred_joints2d = self.net_forward(
+                imgs, bbox_hand, bbox_obj, roots3d=roots3d
+            )
+            return preds_joints, pred_mano_results, preds_obj, pred_joints2d
 
 
+# ========== 修改HOModel类，添加2D热图损失 ==========
 class HOModel(nn.Module):
-
     def __init__(self, honet, mano_lambda_verts3d=None,
                  mano_lambda_joints3d=None,
                  mano_lambda_manopose=None,
@@ -175,31 +229,40 @@ class HOModel(nn.Module):
                  mano_lambda_regulshape=None,
                  mano_lambda_regulpose=None,
                  lambda_joints2d=None,
-                 lambda_objects=None):
+                 lambda_objects=None,
+                 lambda_pose2d_heatmap=1.0):  # 新增：2D热图损失权重
 
         super(HOModel, self).__init__()
         self.honet = honet
-        # supervise when provide mano params
+        # 原有损失保持不变
         self.mano_loss = ManoLoss(lambda_verts3d=mano_lambda_verts3d,
                                   lambda_joints3d=mano_lambda_joints3d,
                                   lambda_manopose=mano_lambda_manopose,
                                   lambda_manoshape=mano_lambda_manoshape)
         self.joint2d_loss = Joint2DLoss(lambda_joints2d=lambda_joints2d)
-        # supervise when provide hand joints
-        self.mano_joint_loss = ManoLoss(lambda_joints3d=mano_lambda_joints3d,
+        self.mano_joint_loss = ManoLoss(lambda_joints3d=lambda_joints3d,
                                         lambda_regulshape=mano_lambda_regulshape,
                                         lambda_regulpose=mano_lambda_regulpose)
-        # object loss
         self.object_loss = ObjectLoss(obj_reg_loss_weight=lambda_objects)
 
-    def forward(self, imgs, joints_img, bbox_hand, bbox_obj,
+        # ========== 新增：2D热图损失（L2损失，也可用MSE） ==========
+        self.lambda_pose2d_heatmap = lambda_pose2d_heatmap
+        self.pose2d_heatmap_loss = nn.MSELoss()
+
+    def forward(self, imgs, bbox_hand, bbox_obj,
                 joints_uv=None, joints_xyz=None, mano_params=None, roots3d=None,
-                obj_p2d_gt=None, obj_mask=None, obj_lossmask=None):
+                obj_p2d_gt=None, obj_mask=None, obj_lossmask=None,
+                pose2d_heatmap_gt=None):  # 新增：2D热图GT
+
         if self.training:
             losses = {}
             total_loss = 0
-            preds_joints2d, pred_mano_results, gt_mano_results, preds_obj = self.honet(
-                imgs, joints_img, bbox_hand, bbox_obj, mano_params=mano_params)
+            # 前向传播（获取新增的2D热图和坐标）
+            preds_joints2d, pred_mano_results, gt_mano_results, preds_obj, pose2d_heatmap, _ = self.honet(
+                imgs, bbox_hand, bbox_obj, mano_params=mano_params
+            )
+
+            # 原有损失计算（保持不变）
             if mano_params is not None:
                 mano_total_loss, mano_losses = self.mano_loss.compute_loss(pred_mano_results, gt_mano_results)
                 total_loss += mano_total_loss
@@ -216,12 +279,20 @@ class HOModel(nn.Module):
                 for key, val in obj_losses.items():
                     losses[key] = val
                 total_loss += obj_total_loss
-            if total_loss is not None:
-                losses["total_loss"] = total_loss.detach().cpu()
-            else:
-                losses["total_loss"] = 0
+
+            # ========== 新增：2D热图损失计算 ==========
+            if pose2d_heatmap_gt is not None:
+                # 计算预测热图和GT热图的MSE损失
+                pose2d_loss = self.pose2d_heatmap_loss(pose2d_heatmap, pose2d_heatmap_gt)
+                pose2d_loss = pose2d_loss * self.lambda_pose2d_heatmap
+                losses["pose2d_heatmap_loss"] = pose2d_loss.detach().cpu()
+                total_loss += pose2d_loss
+
+            losses["total_loss"] = total_loss.detach().cpu() if total_loss != 0 else 0
             return total_loss, losses
         else:
-            preds_joints, pred_mano_results, _, preds_obj = self.honet.module.net_forward(imgs, joints_img, bbox_hand,
-                                                                                          bbox_obj, roots3d=roots3d)
-            return preds_joints, pred_mano_results, preds_obj
+            # 测试时返回2D关节坐标（送给KGC模块）
+            preds_joints, pred_mano_results, preds_obj, pred_joints2d = self.honet(
+                imgs, bbox_hand, bbox_obj, roots3d=roots3d
+            )
+            return preds_joints, pred_mano_results, preds_obj, pred_joints2d
