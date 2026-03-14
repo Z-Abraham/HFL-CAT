@@ -141,7 +141,7 @@ class HONet(nn.Module):
         self.transformer_obj.apply(init_weights)
         self.transformer_hand.apply(init_weights)
         self.obj_head.apply(init_weights)
-        self.KGC.apply(init_weights)  # KGC分支初始化
+        # self.KGC.apply(init_weights)  # KGC分支初始化
         self.pose2d_branch.apply(init_weights)  # 新增分支初始化
 
     def net_forward(self, imgs, bbox_hand, bbox_obj, mano_params=None, roots3d=None):
@@ -172,6 +172,29 @@ class HONet(nn.Module):
                               spatial_scale=1.0 / 4.0,
                               sampling_ratio=-1)
 
+        # ========== 核心修改1：区分训练/测试，获取KGC的输入2D关节 ==========
+        if self.training and joints_uv is not None:
+            # 训练阶段：用GT的2D关节坐标（已归一化到像素值）
+            kgc_input_joints = joints_uv  # (B, 21, 2)
+        else:
+            # 测试阶段：用2D分支预测的关节坐标
+            kgc_input_joints = pred_joints2d  # (B, 21, 2)
+
+        # ========== 核心修改2：调用KGC模块，生成拓扑先验特征Fp ==========
+        # KGC输入：2D关节坐标 (B,21,2) → 输出：拓扑先验特征Fp (B,1024,32,32)（需匹配x_hand尺寸）
+        Fp = self.KGC(kgc_input_joints)  # KGC输出需reshape到(B, C, H, W)，若输出是(B,1024)，需reshape为(B,1024,1,1)后上采样到32x32
+        # 补充：若KGC输出是一维特征，需上采样匹配x_hand尺寸（32x32）
+        if len(Fp.shape) == 2:  # 若Fp是(B,1024)
+            Fp = Fp.unsqueeze(-1).unsqueeze(-1)  # (B,1024,1,1)
+            Fp = nn.functional.interpolate(Fp, size=(self.out_res, self.out_res), mode='bilinear',
+                                           align_corners=False)  # (B,1024,32,32)
+
+        # ========== 核心修改3：拼接Fh+Fho，与Fp一起送入CAT模块 ==========
+        # 拼接Fh(256) + Fho(256) → Fh_ho(512)（沿通道维度）
+        Fh_ho = torch.cat([x_hand, x_obj], dim=1)  # (B, 512, 32, 32)
+        # CAT模块融合：Fh_ho(512) + Fp(1024) → 输出融合特征F_cat (B,256,32,32)（匹配原有hand输入通道）
+        F_cat = self.CAT(Fh_ho, Fp)  # CAT需适配输入通道，输出256维（与原有hand通道一致）
+
         # 物体分支前向（原有逻辑）
         if self.reg_object:
             roi_boxes_obj = torch.cat((idx_tensor, bbox_obj), dim=1)
@@ -191,8 +214,12 @@ class HONet(nn.Module):
         else:
             preds_obj = None
 
-        # 手部分支前向（原有逻辑）
-        hand = hand_obj[:, 0:256, :, :]
+        # ========== 核心修改4：用CAT融合特征替换原有hand输入 ==========
+        # 原逻辑：hand = hand_obj[:, 0:256, :, :]
+        # 新逻辑：用CAT融合后的特征F_cat作为手部分支输入
+        hand = F_cat  # (B,256,32,32)
+
+        # 手部分支前向（原有逻辑，输入替换为F_cat）
         out_hm, encoding, preds_joints = self.hand_head(hand)
         mano_encoding = self.hand_encoder(out_hm, encoding)
         pred_mano_results, gt_mano_results = self.mano_branch(mano_encoding, mano_params=mano_params,
@@ -205,17 +232,17 @@ class HONet(nn.Module):
         batch = imgs.shape[0]
         return batch
 
-    def forward(self, imgs, bbox_hand, bbox_obj, mano_params=None, roots3d=None):
+    def forward(self, imgs, bbox_hand, bbox_obj, mano_params=None, roots3d=None, joints_uv=None):  # 新增：joints_uv
         if self.training:
-            # 训练时返回2D热图和坐标
+            # 训练时传入GT的2D关节坐标joints_uv给net_forward
             preds_joints, pred_mano_results, gt_mano_results, preds_obj, pose2d_heatmap, pred_joints2d = self.net_forward(
-                imgs, bbox_hand, bbox_obj, mano_params=mano_params
+                imgs, bbox_hand, bbox_obj, mano_params=mano_params, joints_uv=joints_uv  # 新增传递
             )
             return preds_joints, pred_mano_results, gt_mano_results, preds_obj, pose2d_heatmap, pred_joints2d
         else:
-            # 测试时返回2D坐标（送给KGC）
+            # 测试时无需传joints_uv，用预测的2D关节
             preds_joints, pred_mano_results, _, preds_obj, _, pred_joints2d = self.net_forward(
-                imgs, bbox_hand, bbox_obj, roots3d=roots3d
+                imgs, bbox_hand, bbox_obj, roots3d=roots3d, joints_uv=None  # 测试时为None
             )
             return preds_joints, pred_mano_results, preds_obj, pred_joints2d
 
@@ -257,9 +284,9 @@ class HOModel(nn.Module):
         if self.training:
             losses = {}
             total_loss = 0
-            # 前向传播（获取新增的2D热图和坐标）
+            # 前向传播时，把GT的joints_uv传给honet
             preds_joints2d, pred_mano_results, gt_mano_results, preds_obj, pose2d_heatmap, _ = self.honet(
-                imgs, bbox_hand, bbox_obj, mano_params=mano_params
+                imgs, bbox_hand, bbox_obj, mano_params=mano_params, joints_uv=joints_uv  # 新增传递
             )
 
             # 原有损失计算（保持不变）
@@ -291,8 +318,8 @@ class HOModel(nn.Module):
             losses["total_loss"] = total_loss.detach().cpu() if total_loss != 0 else 0
             return total_loss, losses
         else:
-            # 测试时返回2D关节坐标（送给KGC模块）
+            # 测试时honet自动用预测的2D关节
             preds_joints, pred_mano_results, preds_obj, pred_joints2d = self.honet(
-                imgs, bbox_hand, bbox_obj, roots3d=roots3d
+                imgs, bbox_hand, bbox_obj, roots3d=roots3d, joints_uv=None
             )
             return preds_joints, pred_mano_results, preds_obj, pred_joints2d
